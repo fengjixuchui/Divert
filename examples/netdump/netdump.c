@@ -1,6 +1,6 @@
 /*
  * netdump.c
- * (C) 2018, all rights reserved,
+ * (C) 2019, all rights reserved,
  *
  * This file is part of WinDivert.
  *
@@ -118,15 +118,24 @@ int __cdecl main(int argc, char **argv)
     }
 
     // Max-out the packet queue:
-    if (!WinDivertSetParam(handle, WINDIVERT_PARAM_QUEUE_LEN, 8192))
+    if (!WinDivertSetParam(handle, WINDIVERT_PARAM_QUEUE_LENGTH, 
+            WINDIVERT_PARAM_QUEUE_LENGTH_MAX))
     {
         fprintf(stderr, "error: failed to set packet queue length (%d)\n",
             GetLastError());
         exit(EXIT_FAILURE);
     }
-    if (!WinDivertSetParam(handle, WINDIVERT_PARAM_QUEUE_TIME, 2048))
+    if (!WinDivertSetParam(handle, WINDIVERT_PARAM_QUEUE_TIME,
+            WINDIVERT_PARAM_QUEUE_TIME_MAX))
     {
         fprintf(stderr, "error: failed to set packet queue time (%d)\n",
+            GetLastError());
+        exit(EXIT_FAILURE);
+    }
+    if (!WinDivertSetParam(handle, WINDIVERT_PARAM_QUEUE_SIZE,
+            WINDIVERT_PARAM_QUEUE_SIZE_MAX))
+    {
+        fprintf(stderr, "error: failed to set packet queue size (%d)\n",
             GetLastError());
         exit(EXIT_FAILURE);
     }
@@ -139,7 +148,7 @@ int __cdecl main(int argc, char **argv)
     while (TRUE)
     {
         // Read a matching packet.
-        if (!WinDivertRecv(handle, packet, sizeof(packet), &addr, &packet_len))
+        if (!WinDivertRecv(handle, packet, sizeof(packet), &packet_len, &addr))
         {
             fprintf(stderr, "warning: failed to read packet (%d)\n",
                 GetLastError());
@@ -147,9 +156,9 @@ int __cdecl main(int argc, char **argv)
         }
 
         // Print info about the matching packet.
-        WinDivertHelperParsePacket(packet, packet_len, &ip_header,
-            &ipv6_header, &icmp_header, &icmpv6_header, &tcp_header,
-            &udp_header, NULL, NULL);
+        WinDivertHelperParsePacket(packet, packet_len, &ip_header, &ipv6_header,
+            NULL, &icmp_header, &icmpv6_header, &tcp_header, &udp_header, NULL,
+            NULL, NULL, NULL);
         if (ip_header == NULL && ipv6_header == NULL)
         {
             fprintf(stderr, "warning: junk packet\n");

@@ -1,6 +1,6 @@
 /*
  * windivert.h
- * (C) 2018, all rights reserved,
+ * (C) 2019, all rights reserved,
  *
  * This file is part of WinDivert.
  *
@@ -95,6 +95,8 @@ typedef struct
  */
 typedef struct
 {
+    UINT64 EndpointId;                  /* Endpoint ID. */
+    UINT64 ParentEndpointId;            /* Parent endpoint ID. */
     UINT32 ProcessId;                   /* Process ID. */
     UINT32 LocalAddr[4];                /* Local address. */
     UINT32 RemoteAddr[4];               /* Remote address. */
@@ -108,6 +110,8 @@ typedef struct
  */
 typedef struct
 {
+    UINT64 EndpointId;                  /* Endpoint ID. */
+    UINT64 ParentEndpointId;            /* Parent Endpoint ID. */
     UINT32 ProcessId;                   /* Process ID. */
     UINT32 LocalAddr[4];                /* Local address. */
     UINT32 RemoteAddr[4];               /* Remote address. */
@@ -136,20 +140,22 @@ typedef struct
     INT64  Timestamp;                   /* Packet's timestamp. */
     UINT64 Layer:8;                     /* Packet's layer. */
     UINT64 Event:8;                     /* Packet event. */
+    UINT64 Sniffed:1;                   /* Packet was sniffed? */
     UINT64 Outbound:1;                  /* Packet is outound? */
     UINT64 Loopback:1;                  /* Packet is loopback? */
     UINT64 Impostor:1;                  /* Packet is impostor? */
     UINT64 IPv6:1;                      /* Packet is IPv6? */
-    UINT64 PseudoIPChecksum:1;          /* Packet has pseudo IPv4 checksum? */
-    UINT64 PseudoTCPChecksum:1;         /* Packet has pseudo TCP checksum? */
-    UINT64 PseudoUDPChecksum:1;         /* Packet has pseudo UDP checksum? */
-    UINT64 Reserved:41;
+    UINT64 IPChecksum:1;                /* Packet has valid IPv4 checksum? */
+    UINT64 TCPChecksum:1;               /* Packet has valid TCP checksum? */
+    UINT64 UDPChecksum:1;               /* Packet has valid UDP checksum? */
+    UINT64 Reserved1:40;
     union
     {
         WINDIVERT_DATA_NETWORK Network; /* Network layer data. */
         WINDIVERT_DATA_FLOW Flow;       /* Flow layer data. */
         WINDIVERT_DATA_SOCKET Socket;   /* Socket layer data. */
         WINDIVERT_DATA_REFLECT Reflect; /* Reflect layer data. */
+        UINT8 Reserved2[64];
     };
 } WINDIVERT_ADDRESS, *PWINDIVERT_ADDRESS;
 
@@ -163,11 +169,12 @@ typedef enum
                                         /* Flow established. */
     WINDIVERT_EVENT_FLOW_DELETED = 2,   /* Flow deleted. */
     WINDIVERT_EVENT_SOCKET_BIND = 3,    /* Socket bind. */
-    WINDIVERT_EVENT_SOCKET_LISTEN = 4,  /* Socket listen. */
-    WINDIVERT_EVENT_SOCKET_CONNECT = 5, /* Socket connect. */
+    WINDIVERT_EVENT_SOCKET_CONNECT = 4, /* Socket connect. */
+    WINDIVERT_EVENT_SOCKET_LISTEN = 5,  /* Socket listen. */
     WINDIVERT_EVENT_SOCKET_ACCEPT = 6,  /* Socket accept. */
-    WINDIVERT_EVENT_REFLECT_OPEN = 7,   /* WinDivert handle opened. */
-    WINDIVERT_EVENT_REFLECT_CLOSE = 8,  /* WinDivert handle closed. */
+    WINDIVERT_EVENT_SOCKET_CLOSE = 7,   /* Socket close. */
+    WINDIVERT_EVENT_REFLECT_OPEN = 8,   /* WinDivert handle opened. */
+    WINDIVERT_EVENT_REFLECT_CLOSE = 9,  /* WinDivert handle closed. */
 } WINDIVERT_EVENT, *PWINDIVERT_EVENT;
 
 /*
@@ -179,19 +186,20 @@ typedef enum
 #define WINDIVERT_FLAG_READ_ONLY        WINDIVERT_FLAG_RECV_ONLY
 #define WINDIVERT_FLAG_SEND_ONLY        0x0008
 #define WINDIVERT_FLAG_WRITE_ONLY       WINDIVERT_FLAG_SEND_ONLY
-#define WINDIVERT_FLAG_RECV_PARTIAL     0x0010
-#define WINDIVERT_FLAG_NO_INSTALL       0x0020
+#define WINDIVERT_FLAG_NO_INSTALL       0x0010
 
 /*
  * WinDivert parameters.
  */
 typedef enum
 {
-    WINDIVERT_PARAM_QUEUE_LEN  = 0,     /* Packet queue length. */
+    WINDIVERT_PARAM_QUEUE_LENGTH = 0,   /* Packet queue length. */
     WINDIVERT_PARAM_QUEUE_TIME = 1,     /* Packet queue time. */
     WINDIVERT_PARAM_QUEUE_SIZE = 2,     /* Packet queue size. */
+    WINDIVERT_PARAM_VERSION_MAJOR = 3,  /* Driver version (major). */
+    WINDIVERT_PARAM_VERSION_MINOR = 4,  /* Driver version (minor). */
 } WINDIVERT_PARAM, *PWINDIVERT_PARAM;
-#define WINDIVERT_PARAM_MAX             WINDIVERT_PARAM_QUEUE_SIZE
+#define WINDIVERT_PARAM_MAX             WINDIVERT_PARAM_VERSION_MINOR
 
 /*
  * WinDivert shutdown parameter.
@@ -220,19 +228,19 @@ extern WINDIVERTEXPORT HANDLE WinDivertOpen(
  */
 extern WINDIVERTEXPORT BOOL WinDivertRecv(
     __in        HANDLE handle,
-    __out       VOID *pPacket,
+    __out_opt   VOID *pPacket,
     __in        UINT packetLen,
-    __out_opt   WINDIVERT_ADDRESS *pAddr,
-    __out_opt   UINT *pReadLen);
+    __out_opt   UINT *pRecvLen,
+    __out_opt   WINDIVERT_ADDRESS *pAddr);
 
 /*
  * Receive (read) a packet from a WinDivert handle.
  */
 extern WINDIVERTEXPORT BOOL WinDivertRecvEx(
     __in        HANDLE handle,
-    __out       PVOID pPacket,
+    __out_opt   VOID *pPacket,
     __in        UINT packetLen,
-    __out_opt   UINT *pReadLen,
+    __out_opt   UINT *pRecvLen,
     __in        UINT64 flags,
     __out       WINDIVERT_ADDRESS *pAddr,
     __inout_opt UINT *pAddrLen,
@@ -245,8 +253,8 @@ extern WINDIVERTEXPORT BOOL WinDivertSend(
     __in        HANDLE handle,
     __in        const VOID *pPacket,
     __in        UINT packetLen,
-    __in        const WINDIVERT_ADDRESS *pAddr,
-    __out_opt   UINT *pWriteLen);
+    __out_opt   UINT *pSendLen,
+    __in        const WINDIVERT_ADDRESS *pAddr);
 
 /*
  * Send (write/inject) a packet to a WinDivert handle.
@@ -255,7 +263,7 @@ extern WINDIVERTEXPORT BOOL WinDivertSendEx(
     __in        HANDLE handle,
     __in        const VOID *pPacket,
     __in        UINT packetLen,
-    __out_opt   UINT *pWriteLen,
+    __out_opt   UINT *pSendLen,
     __in        UINT64 flags,
     __in        const WINDIVERT_ADDRESS *pAddr,
     __in        UINT addrLen,
@@ -291,6 +299,23 @@ extern WINDIVERTEXPORT BOOL WinDivertGetParam(
     __out       UINT64 *pValue);
 
 #endif      /* WINDIVERT_KERNEL */
+
+/*
+ * WinDivert constants.
+ */
+#define WINDIVERT_PRIORITY_HIGHEST              30000
+#define WINDIVERT_PRIORITY_LOWEST               (-WINDIVERT_PRIORITY_HIGHEST)
+#define WINDIVERT_PARAM_QUEUE_LENGTH_DEFAULT    4096
+#define WINDIVERT_PARAM_QUEUE_LENGTH_MIN        32
+#define WINDIVERT_PARAM_QUEUE_LENGTH_MAX        16384
+#define WINDIVERT_PARAM_QUEUE_TIME_DEFAULT      2000        /* 2s */
+#define WINDIVERT_PARAM_QUEUE_TIME_MIN          100         /* 100ms */
+#define WINDIVERT_PARAM_QUEUE_TIME_MAX          16000       /* 16s */
+#define WINDIVERT_PARAM_QUEUE_SIZE_DEFAULT      4194304     /* 4MB */
+#define WINDIVERT_PARAM_QUEUE_SIZE_MIN          65535       /* 64KB */
+#define WINDIVERT_PARAM_QUEUE_SIZE_MAX          33554432    /* 32MB */
+#define WINDIVERT_BATCH_MAX                     0xFF        /* 255 */
+#define WINDIVERT_MTU_MAX                       (40 + 0xFFFF)
 
 /****************************************************************************/
 /* WINDIVERT HELPER API                                                     */
@@ -461,12 +486,15 @@ extern WINDIVERTEXPORT BOOL WinDivertHelperParsePacket(
     __in        UINT packetLen,
     __out_opt   PWINDIVERT_IPHDR *ppIpHdr,
     __out_opt   PWINDIVERT_IPV6HDR *ppIpv6Hdr,
+    __out_opt   UINT8 *pProtocol,
     __out_opt   PWINDIVERT_ICMPHDR *ppIcmpHdr,
     __out_opt   PWINDIVERT_ICMPV6HDR *ppIcmpv6Hdr,
     __out_opt   PWINDIVERT_TCPHDR *ppTcpHdr,
     __out_opt   PWINDIVERT_UDPHDR *ppUdpHdr,
     __out_opt   PVOID *ppData,
-    __out_opt   UINT *pDataLen);
+    __out_opt   UINT *pDataLen,
+    __out_opt   PVOID *ppNext,
+    __out_opt   UINT *pNextLen);
 
 /*
  * Parse an IPv4 address.
@@ -501,11 +529,18 @@ extern WINDIVERTEXPORT BOOL WinDivertHelperFormatIPv6Address(
 /*
  * Calculate IPv4/IPv6/ICMP/ICMPv6/TCP/UDP checksums.
  */
-extern WINDIVERTEXPORT UINT WinDivertHelperCalcChecksums(
+extern WINDIVERTEXPORT BOOL WinDivertHelperCalcChecksums(
     __inout     VOID *pPacket, 
     __in        UINT packetLen,
-    __in_opt    const WINDIVERT_ADDRESS *pAddr,
+    __out_opt   WINDIVERT_ADDRESS *pAddr,
     __in        UINT64 flags);
+
+/*
+ * Decrement the TTL/HopLimit.
+ */
+extern WINDIVERTEXPORT BOOL WinDivertHelperDecrementTTL(
+    __inout     VOID *pPacket,
+    __in        UINT packetLen);
 
 /*
  * Compile the given filter string.

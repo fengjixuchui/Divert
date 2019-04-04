@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # mingw-build.sh
-# (C) 2018, all rights reserved,
+# (C) 2019, all rights reserved,
 #
 # This file is part of WinDivert.
 #
@@ -39,6 +39,11 @@ set -e
 
 ENVS="i686-w64-mingw32 x86_64-w64-mingw32"
 
+if [ "$1" = "debug" ]
+then
+    MSVCRT=-lmsvcrt
+fi 
+
 for ENV in $ENVS
 do
     if [ $ENV = "i686-w64-mingw32" ]
@@ -51,17 +56,17 @@ do
         BITS=64
         MANGLE=
     fi
+    HAVE_SYS=yes
     if [ ! -d install/WDDK/$CPU ]
     then
         echo "WARNING: missing WDDK build; run wddk-build.bat first"
-        echo "SKIP MINGW-$CPU"
-        continue
+        HAVE_SYS=no
     fi
     echo "BUILD MINGW-$CPU"
     CC="$ENV-gcc"
     COPTS="-fno-ident -shared -Wall -Wno-pointer-to-int-cast -Os -Iinclude/ 
         -Wl,--enable-stdcall-fixup -Wl,--entry=${MANGLE}WinDivertDllEntry"
-    CLIBS="-lgcc -lkernel32 -ladvapi32"
+    CLIBS="-lgcc -lkernel32 -ladvapi32 $MSVCRT"
     STRIP="$ENV-strip"
     DLLTOOL="$ENV-dlltool"
     if [ -x "`which $CC`" ]
@@ -97,20 +102,27 @@ do
         $CC -s -O2 -Iinclude/ examples/streamdump/streamdump.c \
             -o "install/MINGW/$CPU/streamdump.exe" -lWinDivert -lws2_32 \
             -L"install/MINGW/$CPU/"
-        echo "\tcopy install/MINGW/$CPU/flowtrack.exe..."
+        echo "\tbuild install/MINGW/$CPU/flowtrack.exe..."
         $CC -s -O2 -Iinclude/ examples/flowtrack/flowtrack.c \
             -o "install/MINGW/$CPU/flowtrack.exe" -lWinDivert -lpsapi \
             -lshlwapi -L"install/MINGW/$CPU/"
-        echo "\tcopy install/MINGW/$CPU/windivertctl.exe..."
+        echo "\tbuild install/MINGW/$CPU/windivertctl.exe..."
         $CC -s -O2 -Iinclude/ examples/windivertctl/windivertctl.c \
             -o "install/MINGW/$CPU/windivertctl.exe" -lWinDivert \
             -lpsapi -lshlwapi -L"install/MINGW/$CPU/"
-        echo "\tcopy install/MINGW/$CPU/socketdump.exe..."
+        echo "\tbuild install/MINGW/$CPU/socketdump.exe..."
         $CC -s -O2 -Iinclude/ examples/socketdump/socketdump.c \
             -o "install/MINGW/$CPU/socketdump.exe" -lWinDivert \
             -lpsapi -lshlwapi -L"install/MINGW/$CPU/"
-        echo "\tcopy install/MINGW/$CPU/WinDivert$BITS.sys..."
-        cp install/WDDK/$CPU/WinDivert$BITS.sys install/MINGW/$CPU
+        echo "\tbuild install/MINGW/$CPU/test.exe..."
+        $CC -s -O2 -Iinclude/ test/test.c \
+            -o "install/MINGW/$CPU/test.exe" -lWinDivert \
+            -L"install/MINGW/$CPU/"
+        if [ $HAVE_SYS = yes ]
+        then
+            echo "\tcopy install/MINGW/$CPU/WinDivert$BITS.sys..."
+            cp install/WDDK/$CPU/WinDivert$BITS.sys install/MINGW/$CPU
+        fi
     else
         echo "WARNING: $CC not found"
     fi
