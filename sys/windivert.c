@@ -289,6 +289,7 @@ typedef struct flow_s *flow_t;
 #define UINT8_MAX       0xFF
 #define UINT16_MAX      0xFFFF
 #define UINT32_MAX      0xFFFFFFFF
+#define IPPROTO_MH      135
 
 /*
  * Global state.
@@ -471,7 +472,7 @@ static BOOL windivert_copy_data(PNET_BUFFER buffer, PVOID data, UINT size);
 static BOOL windivert_lookup_data(PNET_BUFFER buffer, UINT offset, INT idx,
     PVOID data, UINT size);
 static BOOL windivert_parse_headers(PNET_BUFFER buffer, BOOL ipv4,
-    BOOL frag_mode, PWINDIVERT_IPHDR *ip_header_ptr,
+    BOOL *fragment_ptr, PWINDIVERT_IPHDR *ip_header_ptr,
     PWINDIVERT_IPV6HDR *ipv6_header_ptr, PWINDIVERT_ICMPHDR *icmp_header_ptr,
     PWINDIVERT_ICMPV6HDR *icmpv6_header_ptr, PWINDIVERT_TCPHDR *tcp_header_ptr,
     PWINDIVERT_UDPHDR *udp_header_ptr, UINT8 *proto_ptr, UINT *header_len_ptr,
@@ -5284,8 +5285,8 @@ static BOOL windivert_lookup_data(PNET_BUFFER buffer, UINT offset, INT idx,
 /*
  * Parse packet headers.
  */
-static BOOL windivert_parse_headers(PNET_BUFFER buffer, BOOL ipv4,
-    BOOL frag_mode, PWINDIVERT_IPHDR *ip_header_ptr,
+static __forceinline BOOL windivert_parse_headers(PNET_BUFFER buffer,
+    BOOL ipv4, BOOL *fragment_ptr, PWINDIVERT_IPHDR *ip_header_ptr,
     PWINDIVERT_IPV6HDR *ipv6_header_ptr, PWINDIVERT_ICMPHDR *icmp_header_ptr,
     PWINDIVERT_ICMPV6HDR *icmpv6_header_ptr, PWINDIVERT_TCPHDR *tcp_header_ptr,
     PWINDIVERT_UDPHDR *udp_header_ptr, UINT8 *proto_ptr, UINT *header_len_ptr,
@@ -5298,7 +5299,10 @@ static BOOL windivert_parse_headers(PNET_BUFFER buffer, BOOL ipv4,
     PWINDIVERT_ICMPV6HDR icmpv6_header = NULL;
     PWINDIVERT_TCPHDR tcp_header = NULL;
     PWINDIVERT_UDPHDR udp_header = NULL;
-    UINT8 proto = 0;
+    PWINDIVERT_IPV6FRAGHDR frag_header;
+    BOOL fragment = FALSE;
+    UINT8 protocol = 0;
+    UINT16 frag_off = 0;
     UINT header_len = 0;
     NTSTATUS status;
 
@@ -5340,14 +5344,9 @@ static BOOL windivert_parse_headers(PNET_BUFFER buffer, BOOL ipv4,
             DEBUG("FILTER: REJECT (bad IPv4 packet)");
             return FALSE;
         }
-        if (!frag_mode &&
-            (WINDIVERT_IPHDR_GET_MF(ip_header) != 0 ||
-             WINDIVERT_IPHDR_GET_FRAGOFF(ip_header) != 0))
-        {
-            DEBUG("FILTER: REJECT (fragment)");
-            return FALSE;
-        }
-        proto = ip_header->Protocol;
+        frag_off = RtlUshortByteSwap(WINDIVERT_IPHDR_GET_FRAGOFF(ip_header));
+        fragment = (frag_off != 0 || WINDIVERT_IPHDR_GET_MF(ip_header) != 0);
+        protocol = ip_header->Protocol;
         NdisAdvanceNetBufferDataStart(buffer, ip_header_len, FALSE, NULL);
     }
     else
@@ -5374,63 +5373,69 @@ static BOOL windivert_parse_headers(PNET_BUFFER buffer, BOOL ipv4,
             DEBUG("FILTER: REJECT (bad IPv6 packet)");
             return FALSE;
         }
-        proto = ipv6_header->NextHdr;
+        protocol = ipv6_header->NextHdr;
         NdisAdvanceNetBufferDataStart(buffer, ip_header_len, FALSE, NULL);
 
         // Skip extension headers:
-        while (TRUE)
+        while (frag_off == 0)
         {
-            UINT8 *ext_header;
-            UINT ext_header_len;
-            BOOL isexthdr = TRUE;
-
-            ext_header = (UINT8 *)NdisGetDataBuffer(buffer, 2, NULL, 1, 0);
-            if (ext_header == NULL)
-            {
-                break;
-            }
-
-            ext_header_len = (UINT)ext_header[1];
-            switch (proto)
+            UINT8 *ext_header = NULL;
+            UINT ext_header_len = 0;
+            BOOL is_ext_header;
+            switch (protocol)
             {
                 case IPPROTO_FRAGMENT:
-                    if (!frag_mode)
+                    frag_header = (PWINDIVERT_IPV6FRAGHDR)
+                        NdisGetDataBuffer(buffer, 8, NULL, 1, 0);
+                    ext_header = (UINT8 *)frag_header;
+                    if (fragment || frag_header == NULL)
                     {
-                        DEBUG("FILTER: REJECT (fragment)");
-                        NdisRetreatNetBufferDataStart(buffer, ip_header_len,
-                            0, NULL);
-                        return FALSE;
+                        is_ext_header = FALSE;
+                        break;
                     }
+                    fragment = TRUE;
+                    frag_off = RtlUshortByteSwap(
+                        WINDIVERT_IPV6FRAGHDR_GET_FRAGOFF(frag_header));
                     ext_header_len = 8;
+                    is_ext_header  = TRUE;
                     break;
+
                 case IPPROTO_AH:
-                    ext_header_len += 2;
-                    ext_header_len *= 4;
-                    break;
                 case IPPROTO_HOPOPTS:
                 case IPPROTO_DSTOPTS:
                 case IPPROTO_ROUTING:
-                    ext_header_len++;
-                    ext_header_len *= 8;
+                case IPPROTO_MH:
+                    ext_header = (UINT8 *)NdisGetDataBuffer(buffer, 2, NULL,
+                        1, 0);
+                    if (ext_header == NULL)
+                    {
+                        is_ext_header = FALSE;
+                        break;
+                    }
+                    ext_header_len = (UINT)ext_header[1];
+                    if (protocol == IPPROTO_AH)
+                    {
+                        ext_header_len += 2;
+                        ext_header_len *= 4;
+                    }
+                    else
+                    {
+                        ext_header_len++;
+                        ext_header_len *= 8;
+                    }
+                    is_ext_header = TRUE;
                     break;
                 default:
-                    isexthdr = FALSE;
+
+                    is_ext_header = FALSE;
                     break;
             }
 
-            if (!isexthdr)
+            if (!is_ext_header || ip_header_len + ext_header_len > total_len)
             {
                 break;
             }
-
-            proto = ext_header[0];
-            if (ip_header_len + ext_header_len > total_len)
-            {
-                DEBUG("FILTER: REJECT (bad IPv6 extension header)");
-                NdisRetreatNetBufferDataStart(buffer, ip_header_len,
-                    0, NULL);
-                return FALSE;
-            }
+            protocol = ext_header[0];
             ip_header_len += ext_header_len;
             NdisAdvanceNetBufferDataStart(buffer, ext_header_len, FALSE,
                 NULL);
@@ -5438,42 +5443,64 @@ static BOOL windivert_parse_headers(PNET_BUFFER buffer, BOOL ipv4,
     }
 
     header_len = ip_header_len;
-    switch (proto)
+    if (frag_off == 0)
     {
-        case IPPROTO_ICMP:
-            icmp_header = (PWINDIVERT_ICMPHDR)NdisGetDataBuffer(buffer,
-                sizeof(WINDIVERT_ICMPHDR), NULL, 1, 0);
-            header_len += (icmp_header == NULL? 0: sizeof(WINDIVERT_ICMPHDR));
-            break;
-        case IPPROTO_ICMPV6:
-            icmpv6_header = (PWINDIVERT_ICMPV6HDR)NdisGetDataBuffer(buffer,
-                sizeof(WINDIVERT_ICMPV6HDR), NULL, 1, 0);
-            header_len +=
-                (icmpv6_header == NULL? 0: sizeof(WINDIVERT_ICMPV6HDR));
-            break;
-        case IPPROTO_TCP:
-            tcp_header = (PWINDIVERT_TCPHDR)NdisGetDataBuffer(buffer,
-                sizeof(WINDIVERT_TCPHDR), NULL, 1, 0);
-            if (tcp_header != NULL)
-            {
-                UINT tcp_header_len = tcp_header->HdrLength * sizeof(UINT32);
-                if (header_len + tcp_header_len > total_len)
+        switch (protocol)
+        {
+            case IPPROTO_ICMP:
+                if (ip_header == NULL)
                 {
-                    // Bad TCP options:
-                    tcp_header = NULL;
                     break;
                 }
-                header_len += tcp_header_len;
-            }
-            break;
-        case IPPROTO_UDP:
-            udp_header = (PWINDIVERT_UDPHDR)NdisGetDataBuffer(buffer,
-                sizeof(WINDIVERT_UDPHDR), NULL, 1, 0);
-            header_len += (udp_header == NULL? 0: sizeof(WINDIVERT_UDPHDR));
-            break;
-        default:
-            break;
+                icmp_header = (PWINDIVERT_ICMPHDR)NdisGetDataBuffer(buffer,
+                    sizeof(WINDIVERT_ICMPHDR), NULL, 1, 0);
+                header_len +=
+                    (icmp_header == NULL? 0: sizeof(WINDIVERT_ICMPHDR));
+                break;
+
+            case IPPROTO_ICMPV6:
+                if (ipv6_header == NULL)
+                {
+                    break;
+                }
+                icmpv6_header = (PWINDIVERT_ICMPV6HDR)NdisGetDataBuffer(buffer,
+                    sizeof(WINDIVERT_ICMPV6HDR), NULL, 1, 0);
+                header_len +=
+                    (icmpv6_header == NULL? 0: sizeof(WINDIVERT_ICMPV6HDR));
+                break;
+
+            case IPPROTO_TCP:
+                tcp_header = (PWINDIVERT_TCPHDR)NdisGetDataBuffer(buffer,
+                    sizeof(WINDIVERT_TCPHDR), NULL, 1, 0);
+                if (tcp_header != NULL)
+                {
+                    if (tcp_header->HdrLength < 5)
+                    {
+                        tcp_header = NULL;
+                    }
+                    else
+                    {
+                        UINT tcp_header_len =
+                            tcp_header->HdrLength * sizeof(UINT32);
+                        tcp_header_len =
+                            (header_len + tcp_header_len > total_len?
+                                total_len - header_len: tcp_header_len);
+                        header_len += tcp_header_len;
+                    }
+                }
+                break;
+
+            case IPPROTO_UDP:
+                udp_header = (PWINDIVERT_UDPHDR)NdisGetDataBuffer(buffer,
+                    sizeof(WINDIVERT_UDPHDR), NULL, 1, 0);
+                header_len +=
+                    (udp_header == NULL? 0: sizeof(WINDIVERT_UDPHDR));
+                break;
+            default:
+                break;
+        }
     }
+
     status = NdisRetreatNetBufferDataStart(buffer, ip_header_len, 0, NULL);
     if (!NT_SUCCESS(status))
     {
@@ -5482,13 +5509,14 @@ static BOOL windivert_parse_headers(PNET_BUFFER buffer, BOOL ipv4,
         return FALSE;
     }
 
+    *fragment_ptr      = fragment;
     *ip_header_ptr     = ip_header;
     *ipv6_header_ptr   = ipv6_header;
     *icmp_header_ptr   = icmp_header;
     *icmpv6_header_ptr = icmpv6_header;
     *tcp_header_ptr    = tcp_header;
     *udp_header_ptr    = udp_header;
-    *proto_ptr         = proto;
+    *proto_ptr         = protocol;
     *header_len_ptr    = header_len;
     *payload_len_ptr   = total_len - header_len;
 
@@ -5513,6 +5541,7 @@ static BOOL windivert_filter(PNET_BUFFER buffer, WINDIVERT_LAYER layer,
     UINT header_len = 0, payload_len = 0;
     UINT64 random64 = 0;
     UINT16 ip, ttl;
+    BOOL fragment = FALSE;
     PWINDIVERT_DATA_NETWORK network_data = NULL;
     PWINDIVERT_DATA_FLOW flow_data = NULL;
     PWINDIVERT_DATA_SOCKET socket_data = NULL;
@@ -5525,9 +5554,13 @@ static BOOL windivert_filter(PNET_BUFFER buffer, WINDIVERT_LAYER layer,
     {
         case WINDIVERT_LAYER_NETWORK:
         case WINDIVERT_LAYER_NETWORK_FORWARD:
-            if (!windivert_parse_headers(buffer, ipv4, frag_mode, &ip_header,
+            if (!windivert_parse_headers(buffer, ipv4, &fragment, &ip_header,
                     &ipv6_header, &icmp_header, &icmpv6_header, &tcp_header,
                     &udp_header, &protocol, &header_len, &payload_len))
+            {
+                return FALSE;
+            }
+            if (fragment && !frag_mode)
             {
                 return FALSE;
             }
@@ -5599,6 +5632,7 @@ static BOOL windivert_filter(PNET_BUFFER buffer, WINDIVERT_LAYER layer,
             case WINDIVERT_FILTER_FIELD_PACKET16:
             case WINDIVERT_FILTER_FIELD_PACKET32:
             case WINDIVERT_FILTER_FIELD_LENGTH:
+            case WINDIVERT_FILTER_FIELD_FRAGMENT:
                 result = (layer == WINDIVERT_LAYER_NETWORK ||
                           layer == WINDIVERT_LAYER_NETWORK_FORWARD);
                 break;
@@ -5785,6 +5819,9 @@ static BOOL windivert_filter(PNET_BUFFER buffer, WINDIVERT_LAYER layer,
                     break;
                 case WINDIVERT_FILTER_FIELD_OUTBOUND:
                     field[0] = (UINT32)outbound;
+                    break;
+                case WINDIVERT_FILTER_FIELD_FRAGMENT:
+                    field[0] = (UINT32)fragment;
                     break;
                 case WINDIVERT_FILTER_FIELD_IFIDX:
                     field[0] = network_data->IfIdx;
@@ -6456,6 +6493,7 @@ static const WINDIVERT_FILTER *windivert_filter_compile(
             case WINDIVERT_FILTER_FIELD_ZERO:
             case WINDIVERT_FILTER_FIELD_INBOUND:
             case WINDIVERT_FILTER_FIELD_OUTBOUND:
+            case WINDIVERT_FILTER_FIELD_FRAGMENT:
             case WINDIVERT_FILTER_FIELD_IP:
             case WINDIVERT_FILTER_FIELD_IPV6:
             case WINDIVERT_FILTER_FIELD_ICMP:

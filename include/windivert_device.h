@@ -45,7 +45,7 @@
 #include "windivert.h"
 
 #define WINDIVERT_VERSION_MAJOR                     2
-#define WINDIVERT_VERSION_MINOR                     1
+#define WINDIVERT_VERSION_MINOR                     2
 
 #define WINDIVERT_MAGIC_DLL                         0x4C4C447669645724ull
 #define WINDIVERT_MAGIC_SYS                         0x5359537669645723ull
@@ -149,8 +149,9 @@
 #define WINDIVERT_FILTER_FIELD_RANDOM8              82
 #define WINDIVERT_FILTER_FIELD_RANDOM16             83
 #define WINDIVERT_FILTER_FIELD_RANDOM32             84
+#define WINDIVERT_FILTER_FIELD_FRAGMENT             85
 #define WINDIVERT_FILTER_FIELD_MAX                  \
-    WINDIVERT_FILTER_FIELD_RANDOM32
+    WINDIVERT_FILTER_FIELD_FRAGMENT
 
 #define WINDIVERT_FILTER_TEST_EQ                    0
 #define WINDIVERT_FILTER_TEST_NEQ                   1
